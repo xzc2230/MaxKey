@@ -42,6 +42,7 @@ setEnvVars.bat
 
 /.gradle/
 /.gradle/*
+/.worktrees/
 .vscode/settings.json
 
 maxkey-web-frontend/maxkey-web-mgt-ng/node_modules/
