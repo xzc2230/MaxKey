@@ -1,0 +1,7 @@
+.env
+*.rendered
+*.rendered.*
+secrets/
+mysql/data/
+redis/data/
+backups/

@@ -1,0 +1,8 @@
+[mysqld]
+character-set-server=utf8mb4
+collation-server=utf8mb4_unicode_ci
+default-time-zone=+08:00
+skip-name-resolve=ON
+max_connections=300
+slow_query_log=ON
+long_query_time=1

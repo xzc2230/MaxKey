@@ -1,0 +1,54 @@
+server {
+    listen 80 default_server;
+    server_name _;
+
+    access_log /var/log/nginx/access.log main;
+    error_log /var/log/nginx/error.log warn;
+
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    client_max_body_size 20m;
+
+    set $maxkey_auth http://maxkey-auth:9527;
+    set $maxkey_frontend http://maxkey-frontend:8527;
+    set $maxkey_mgt http://maxkey-mgt:9526;
+    set $maxkey_mgt_frontend http://maxkey-mgt-frontend:8526;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Port $server_port;
+    proxy_set_header X-Request-Id $request_id;
+    proxy_set_header Connection "";
+
+    proxy_connect_timeout 10s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
+    send_timeout 60s;
+
+    location ~ /\.(?!well-known) {
+        deny all;
+    }
+
+    location = / {
+        return 302 /maxkey/;
+    }
+
+    location /sign/ {
+        proxy_pass $maxkey_auth;
+    }
+
+    location /maxkey/ {
+        proxy_pass $maxkey_frontend;
+    }
+
+    location /maxkey-mgt-api/ {
+        proxy_pass $maxkey_mgt;
+    }
+
+    location /maxkey-mgt/ {
+        proxy_pass $maxkey_mgt_frontend;
+    }
+}

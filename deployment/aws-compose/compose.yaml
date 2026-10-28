@@ -1,0 +1,178 @@
+name: maxkey
+
+x-json-logging: &json-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-backend-common: &backend-common
+  restart: unless-stopped
+  depends_on:
+    mysql:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  networks:
+    - maxkey_edge
+    - maxkey_data
+  logging: *json-logging
+
+services:
+  mysql:
+    image: ${MYSQL_IMAGE:?MYSQL_IMAGE is required}
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DATABASE_NAME:?DATABASE_NAME is required}
+      MYSQL_USER: ${DATABASE_USER:?DATABASE_USER is required}
+      MYSQL_PASSWORD: ${DATABASE_PWD:?DATABASE_PWD is required}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+      TZ: Asia/Shanghai
+    volumes:
+      - /srv/maxkey/mysql/data:/var/lib/mysql
+      - type: bind
+        source: /srv/maxkey/mysql/init/00-maxkey.sql
+        target: /docker-entrypoint-initdb.d/00-maxkey.sql
+        read_only: true
+        bind:
+          create_host_path: false
+      - ./mysql/conf.d/maxkey.cnf:/etc/mysql/conf.d/maxkey.cnf:ro
+    networks:
+      - maxkey_data
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$${MYSQL_PASSWORD} mysql --protocol=TCP -h 127.0.0.1 -u$${MYSQL_USER} $${MYSQL_DATABASE} -e 'SELECT 1' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 300s
+    mem_limit: 4g
+    logging: *json-logging
+
+  redis:
+    image: ${REDIS_IMAGE:?REDIS_IMAGE is required}
+    restart: unless-stopped
+    environment:
+      REDIS_PWD: ${REDIS_PWD:?REDIS_PWD is required}
+    command:
+      - redis-server
+      - /usr/local/etc/redis/redis.conf
+      - --requirepass
+      - ${REDIS_PWD:?REDIS_PWD is required}
+    volumes:
+      - /srv/maxkey/redis/data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    networks:
+      - maxkey_data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PWD}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    mem_limit: 1g
+    logging: *json-logging
+
+  maxkey-auth:
+    <<: *backend-common
+    image: ${AUTH_IMAGE:?AUTH_IMAGE is required}
+    environment:
+      SERVER_PORT: "9527"
+      SERVER_PUBLIC_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
+      SERVER_SCHEME: ${SERVER_SCHEME:?SERVER_SCHEME is required}
+      SERVER_HOST: ${SERVER_HOST:?SERVER_HOST is required}
+      SERVER_AUTHZ_URL: ${SERVER_AUTHZ_URL:?SERVER_AUTHZ_URL is required}
+      SERVER_MGT_URL: ${SERVER_MGT_URL:?SERVER_MGT_URL is required}
+      SERVER_MGT_API_URL: ${SERVER_MGT_API_URL:?SERVER_MGT_API_URL is required}
+      LOGIN_CAS_SERVER: ${LOGIN_CAS_SERVER:?LOGIN_CAS_SERVER is required}
+      LOGIN_CAS_SERVICE: ${LOGIN_CAS_SERVICE:?LOGIN_CAS_SERVICE is required}
+      SERVER_PERSISTENCE: "2"
+      DATABASE_HOST: mysql
+      DATABASE_PORT: "3306"
+      DATABASE_NAME: ${DATABASE_NAME:?DATABASE_NAME is required}
+      DATABASE_USER: ${DATABASE_USER:?DATABASE_USER is required}
+      DATABASE_PWD: ${DATABASE_PWD:?DATABASE_PWD is required}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PWD: ${REDIS_PWD:?REDIS_PWD is required}
+      JWT_SECRET: ${AUTH_JWT_SECRET:?AUTH_JWT_SECRET is required}
+      JWT_REFRESH_SECRET: ${AUTH_JWT_REFRESH_SECRET:?AUTH_JWT_REFRESH_SECRET is required}
+    healthcheck:
+      test: ["CMD-SHELL", "code=$$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:9527/sign/) && case \"$$code\" in [234][0-9][0-9]) exit 0 ;; *) exit 1 ;; esac"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+    mem_limit: 3g
+
+  maxkey-mgt:
+    <<: *backend-common
+    image: ${MGT_IMAGE:?MGT_IMAGE is required}
+    environment:
+      SERVER_PORT: "9526"
+      SERVER_PUBLIC_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
+      SERVER_SCHEME: ${SERVER_SCHEME:?SERVER_SCHEME is required}
+      SERVER_HOST: ${SERVER_HOST:?SERVER_HOST is required}
+      SERVER_AUTHZ_URL: ${SERVER_AUTHZ_URL:?SERVER_AUTHZ_URL is required}
+      SERVER_MGT_URL: ${SERVER_MGT_URL:?SERVER_MGT_URL is required}
+      SERVER_MGT_API_URL: ${SERVER_MGT_API_URL:?SERVER_MGT_API_URL is required}
+      LOGIN_CAS_SERVER: ${LOGIN_CAS_SERVER:?LOGIN_CAS_SERVER is required}
+      LOGIN_CAS_SERVICE: ${LOGIN_CAS_SERVICE:?LOGIN_CAS_SERVICE is required}
+      SERVER_PERSISTENCE: "2"
+      DATABASE_HOST: mysql
+      DATABASE_PORT: "3306"
+      DATABASE_NAME: ${DATABASE_NAME:?DATABASE_NAME is required}
+      DATABASE_USER: ${DATABASE_USER:?DATABASE_USER is required}
+      DATABASE_PWD: ${DATABASE_PWD:?DATABASE_PWD is required}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PWD: ${REDIS_PWD:?REDIS_PWD is required}
+      JWT_SECRET: ${MGT_JWT_SECRET:?MGT_JWT_SECRET is required}
+      JWT_REFRESH_SECRET: ${MGT_JWT_REFRESH_SECRET:?MGT_JWT_REFRESH_SECRET is required}
+    healthcheck:
+      test: ["CMD-SHELL", "code=$$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:9526/maxkey-mgt-api/) && case \"$$code\" in [234][0-9][0-9]) exit 0 ;; *) exit 1 ;; esac"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+    mem_limit: 2g
+
+  maxkey-frontend:
+    image: ${FRONTEND_IMAGE:?FRONTEND_IMAGE is required}
+    restart: unless-stopped
+    networks:
+      - maxkey_edge
+    logging: *json-logging
+
+  maxkey-mgt-frontend:
+    image: ${MGT_FRONTEND_IMAGE:?MGT_FRONTEND_IMAGE is required}
+    restart: unless-stopped
+    networks:
+      - maxkey_edge
+    logging: *json-logging
+
+  nginx:
+    image: ${NGINX_IMAGE:?NGINX_IMAGE is required}
+    restart: unless-stopped
+    depends_on:
+      maxkey-auth:
+        condition: service_healthy
+      maxkey-mgt:
+        condition: service_healthy
+      maxkey-frontend:
+        condition: service_started
+      maxkey-mgt-frontend:
+        condition: service_started
+    environment:
+      NGINX_ENVSUBST_FILTER: "^MAXKEY_"
+    ports:
+      - "${HTTP_BIND_IP:-0.0.0.0}:${HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx/conf.d/maxkey.conf.template:/etc/nginx/templates/default.conf.template:ro
+    networks:
+      - maxkey_edge
+    logging: *json-logging
+
+networks:
+  maxkey_edge:
+  maxkey_data:
+    internal: true
