@@ -12,7 +12,7 @@ export const environment = {
   api: {
     //baseUrl: './',
     //baseUrl: 'http://sso.maxkey.top/sign/',
-    baseUrl: 'http://localhost:9527/sign/',
+    baseUrl: 'http://127.0.0.1:9527/sign/',
     refreshTokenEnabled: true,
     refreshTokenType: 'auth-refresh'
   },
