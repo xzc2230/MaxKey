@@ -1,4 +1,7 @@
 # 单机部署：中间件、MaxKey、Chatwoot、客服入口和 Nginx 都在这一台服务器上。
+# 本目录文件：.env.example、nginx/saas.conf、nginx/saas-tls.conf、nginx/proxy-params.conf。
+# mysql/init/ 在首次启动前放入仓库根目录的 sql/v4.2.0/maxkey.sql。证书放在 nginx/certs/。
+# 镜像构建目录在仓库根目录：maxkey-webs/、maxkey-web-frontend/、local-chat/。
 name: maxkey-saas
 
 x-logging: &default-logging
