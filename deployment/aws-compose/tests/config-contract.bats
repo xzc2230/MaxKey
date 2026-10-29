@@ -130,6 +130,27 @@ PY
   [ "$status" -eq 0 ]
 }
 
+@test "env example is a strict render template and does not carry deployable sentinels" {
+  run python3 - <<'PY'
+text = open("deployment/aws-compose/.env.example").read()
+for forbidden in ("192.0.2.10", "generated-at-install", "age1example", "000000000000", "4.2.0-company.1-d7c9d9af"):
+    assert forbidden not in text, forbidden
+for placeholder in (
+    "__AWS_REGION__",
+    "__ECR_REGISTRY__",
+    "__IMAGE_VERSION__",
+    "__PUBLIC_BASE_URL__",
+    "__DATABASE_PWD__",
+    "__MYSQL_ROOT_PASSWORD__",
+    "__BACKUP_AGE_RECIPIENT__",
+):
+    assert placeholder in text, placeholder
+assert "ADMIN_INITIAL_PASSWORD_FILE=" in text
+assert "ADMIN_INITIAL_PASSWORD=" not in text
+PY
+  [ "$status" -eq 0 ]
+}
+
 @test "backends use separate jwt secret mappings" {
   run python3 - <<'PY'
 import yaml

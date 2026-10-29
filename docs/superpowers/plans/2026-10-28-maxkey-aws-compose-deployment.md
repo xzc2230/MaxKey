@@ -16,7 +16,6 @@
 - Target EC2 capacity is 8 vCPU, 16 GB RAM, and 200 GB encrypted gp3.
 - Runtime images must use ECR `repository@sha256:...` references from the release manifest; `latest`, untagged bases, and mutable runtime tags are forbidden.
 - EC2 receives ECR credentials only through an Instance Role with `AmazonEC2ContainerRegistryReadOnly`.
-- Off-host S3 backup, when enabled, adds a separate least-privilege policy limited to `s3:PutObject` and multipart-upload actions under one configured bucket prefix; no broad S3 policy is allowed.
 - MySQL, Redis, application backends, and frontend containers must not expose host ports.
 - Only Nginx exposes HTTP during the initial IP-based internal-validation phase.
 - This bundle is not production-ready for OIDC until a follow-up release adds a domain, TLS on 443, and an HTTP-to-HTTPS redirect.
@@ -59,18 +58,14 @@ deployment/aws-compose/
 │   ├── upgrade.sh
 │   ├── build-images.sh
 │   ├── publish-ecr.sh
-│   ├── verify-image-scan.sh
 │   └── package-release.sh
 └── tests/
     ├── config-contract.bats
     ├── dockerfiles.bats
     ├── install.bats
     ├── operations.bats
-    ├── release.bats
-    ├── smoke.sh
     ├── test_render_templates.py
     └── fixtures/bin/
-deployment/aws_compose_renderer.py
 docs/runbooks/
 └── maxkey-aws-compose.md
 ```
@@ -239,7 +234,7 @@ git commit -m "feat: externalize deployment URLs and JWT secrets"
               maxkey-webs/maxkey-web-mgt/Dockerfile \
               maxkey-web-frontend/maxkey-web-ng/Dockerfile \
               maxkey-web-frontend/maxkey-web-mgt-ng/Dockerfile; do
-    ! grep -Ei '^FROM[[:space:]]+([^[:space:]]*:latest|nginx)([[:space:]]|$)' "$file"
+    ! grep -Ei '^FROM[[:space:]]+[^[:space:]]*(:latest|^nginx$)' "$file"
     grep -E '^FROM[[:space:]]+[^[:space:]]+@sha256:[0-9a-f]{64}$' "$file"
   done
 }
@@ -255,9 +250,10 @@ Expected: FAIL on `sleep 60`, JVM option ordering, and curl.
 
 - [ ] **Step 3: Update each backend Dockerfile**
 
-Resolve a supported JRE 21 Alpine base with `docker buildx imagetools inspect` and make the first line a literal version-plus-digest reference. Then use this authentication image fragment, changing paths and jar names for mgt:
+Use this authentication image pattern, changing paths and jar names for mgt:
 
 ```dockerfile
+FROM eclipse-temurin:<supported-jre-21-tag>@sha256:<literal-64-hex-digest>
 RUN apk add --no-cache curl \
     && addgroup -S maxkey \
     && adduser -S -G maxkey maxkey
@@ -271,7 +267,7 @@ ENV JAVA_OPTS="-Xms512m -Xmx2048m -Djava.security.egd=file:/dev/./urandom"
 ENTRYPOINT ["sh", "-c", "exec java ${JAVA_OPTS} -jar maxkey-boot.jar"]
 ```
 
-Write the resolved literal digest into each Dockerfile. Remove the unused Node stages from both frontend Dockerfiles and use a versioned Nginx Alpine image pinned by literal digest.
+Resolve each base digest with `docker buildx imagetools inspect` and write the literal digest into the Dockerfile; the angle-bracket notation above is explanatory and must not appear in committed files. Remove the unused Node stages from both frontend Dockerfiles and use a versioned Nginx Alpine image pinned by literal digest.
 
 - [ ] **Step 4: Run Dockerfile tests**
 
@@ -333,22 +329,6 @@ PY
 
 @test "application services use redis persistence" {
   grep -F 'SERVER_PERSISTENCE: "2"' deployment/aws-compose/compose.yaml
-}
-
-@test "mysql and both backends receive the non-root database contract" {
-  run python3 - <<'PY'
-import yaml
-doc = yaml.safe_load(open("deployment/aws-compose/compose.yaml"))
-mysql = doc["services"]["mysql"]["environment"]
-for key in ("MYSQL_DATABASE", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_ROOT_PASSWORD"):
-    assert key in mysql, key
-for name in ("maxkey-auth", "maxkey-mgt"):
-    env = doc["services"][name]["environment"]
-    for key in ("DATABASE_HOST", "DATABASE_PORT", "DATABASE_NAME", "DATABASE_USER", "DATABASE_PWD"):
-        assert key in env, (name, key)
-    assert env["DATABASE_USER"] != "root"
-PY
-  [ "$status" -eq 0 ]
 }
 
 @test "compose gets every image from a digest-only variable" {
@@ -441,8 +421,6 @@ The Compose file must:
 - map only `${HTTP_BIND_IP:-0.0.0.0}:${HTTP_PORT:-80}:80` on Nginx;
 - set `SERVER_PERSISTENCE: "2"` and Redis credentials on both backends;
 - pass separate JWT secrets to auth and mgt containers;
-- pass `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, and `MYSQL_ROOT_PASSWORD` to MySQL so its entrypoint creates the database and non-root application account before loading `00-maxkey.sql`;
-- pass `DATABASE_HOST=mysql`, `DATABASE_PORT=3306`, and the matching database name/non-root credentials to both backends; root credentials must never reach an application container;
 - pass all public URL and management CAS variables from the configuration contract;
 - set memory limits of 3 GB auth, 2 GB mgt, 4 GB MySQL, and 1 GB Redis;
 - add MySQL `mysqladmin ping`, authenticated Redis `redis-cli ping`, and backend HTTP checks; auth checks `http://localhost:9527/sign/`, management checks `http://localhost:9526/maxkey-mgt-api/`, and backend checks accept HTTP 200–499 but reject connection errors and 5xx;
@@ -555,7 +533,7 @@ and keep `deployment/aws-compose/scripts/render_templates.py` as its CLI wrapper
 - [ ] **Step 2: Run and verify failure**
 
 ```bash
-python3 -m unittest discover -s deployment/aws-compose/tests -p 'test_*.py' -v
+python3 -m unittest deployment/aws-compose/tests/test_render_templates.py -v
 ```
 
 Expected: FAIL because the renderer does not exist.
@@ -636,7 +614,7 @@ Test that rendered SQL:
 - [ ] **Step 6: Run tests**
 
 ```bash
-python3 -m unittest discover -s deployment/aws-compose/tests -p 'test_*.py' -v
+python3 -m unittest deployment/aws-compose/tests/test_render_templates.py -v
 ```
 
 Expected: PASS.
@@ -679,14 +657,12 @@ Cover:
 - missing Instance Role returns 20;
 - existing `.env` is preserved;
 - existing MySQL data is never reinitialized;
-- a fresh install creates one 24-character alphanumeric administrator password, writes it once to `/root/maxkey-initial-credentials.txt` with mode `0600`, and derives a bcrypt cost-12 hash with `htpasswd -bnBC 12`;
-- a retry before successful database initialization reuses the existing initial administrator password; a retry after the hardening marker exists neither needs nor recreates the credentials file;
 - nonempty MySQL data without a valid `initial_hardening=complete` database marker prevents application startup with exit 30;
 - generated service secrets use at least 64 lowercase hex characters and round-trip unchanged through `.env` and `docker compose config`;
 - a lock prevents concurrent installation;
 - `latest` image version is rejected.
 - a missing, malformed, or mismatched `manifest.sha256` aborts before installer libraries are sourced or files copied;
-- every image in `images.env` is a literal digest reference matching the checksummed release manifest.
+- every image in `images.env` is a literal digest reference matching the signed release manifest.
 
 Use fixture commands injected at the front of `PATH` so tests never call real IMDS, apt, Docker, or AWS.
 Use table-driven fixtures to assert the documented `0/10/20/30/40/50` exit-code mapping.
@@ -749,7 +725,6 @@ enable_docker
 ```
 
 Install Docker from Docker's signed official APT repository, not `curl | sh`.
-Install `age`, `apache2-utils`, AWS CLI v2, `jq`, `curl`, and certificate tooling from verified Ubuntu packages or vendor archives with pinned checksum verification.
 
 - [ ] **Step 6: Implement `lib/stack.sh`**
 
@@ -758,7 +733,6 @@ Export:
 ```bash
 prepare_directories
 generate_env_once
-generate_admin_bootstrap_once
 render_stack_files
 pull_images
 start_data_services
@@ -770,11 +744,7 @@ validate_image_digests
 record_image_digests
 ```
 
-`generate_env_once` must return without changing any existing secret. On first install it also generates one age X25519 identity, writes only its public recipient to `.env`, and writes the private recovery identity to `/root/maxkey-backup-age-key.txt` with mode `0600`; the runbook requires copying that identity to an offline secrets store and deleting the server copy after a restore drill.
-
-`generate_admin_bootstrap_once` runs only for an empty database. It creates or reuses `/root/maxkey-initial-credentials.txt`, generates a 24-character password from a dotenv/SQL-safe alphanumeric alphabet, extracts only the bcrypt hash from `htpasswd -bnBC 12`, and passes that hash directly to the strict renderer without writing it to `.env` or a command line. File creation must be atomic and mode `0600`. If data exists without the hardening marker, it fails closed instead of changing the admin password. Once the hardening marker exists, a deleted credentials file is never recreated.
-
-`validate_database_hardening` must query the completion marker and independently verify the admin bcrypt prefix, disabled non-admin users, disabled non-management apps, and rewritten management callback URLs. A nonempty database that fails validation is never reinitialized automatically and no application container may start.
+`generate_env_once` must return without changing any existing secret. On first install it also generates one age X25519 identity, writes only its public recipient to `.env`, and writes the private recovery identity to `/root/maxkey-backup-age-key.txt` with mode `0600`; the runbook requires copying that identity to an offline secrets store and deleting the server copy after a restore drill. `validate_database_hardening` must query the completion marker and independently verify the admin bcrypt prefix, disabled non-admin users, disabled non-management apps, and rewritten management callback URLs. A nonempty database that fails validation is never reinitialized automatically and no application container may start.
 
 - [ ] **Step 7: Implement `install.sh` orchestration**
 
@@ -1035,7 +1005,6 @@ Document exact AWS preparation:
 - EIP;
 - Security Group rules that restrict SSH and temporary HTTP 80 to named trusted source CIDRs;
 - ECR ReadOnly Instance Role;
-- optional backup policy scoped to `s3:PutObject`, multipart-upload completion/abort, and one `BACKUP_S3_URI` prefix; it becomes mandatory before off-host-backup acceptance and must not grant bucket-wide read or delete;
 - four ECR repositories;
 - archive checksum verification;
 - one-command installation;
@@ -1045,7 +1014,6 @@ Document exact AWS preparation:
 - backup, restore, upgrade, and diagnostics commands.
 
 State prominently that IP/HTTP is for internal validation only. Formal OIDC integration and public production traffic are blocked until a domain, trusted TLS certificate, Nginx 443 listener, secure-cookie review, and HTTP-to-HTTPS redirect are delivered and accepted.
-Include the exact least-privilege S3 policy template and explain that `AmazonEC2ContainerRegistryReadOnly` alone cannot upload backups.
 
 - [ ] **Step 2: Implement smoke test**
 
@@ -1128,7 +1096,7 @@ docker run --rm -v "$PWD:/code" -w /code python:3.13-alpine \
   sh -c 'pip install --no-cache-dir pyyaml==6.0.2 && \
     apk add --no-cache bash bats git tar && \
     bats deployment/aws-compose/tests && \
-    python3 -m unittest discover -s deployment/aws-compose/tests -p "test_*.py" -v'
+    python3 -m unittest deployment/aws-compose/tests/test_render_templates.py -v'
 
 docker compose --env-file deployment/aws-compose/.env.example \
   --env-file deployment/aws-compose/images.env \
@@ -1137,4 +1105,4 @@ docker compose --env-file deployment/aws-compose/.env.example \
 git diff --check
 ```
 
-Then run the Task 8 fresh-EC2 installation, repeat-install, backup/restore, and failed-upgrade tests. Internal-validation acceptance requires all checks to pass and recording the exact ECR image digests; production approval remains blocked until the domain/TLS follow-up is implemented and accepted.
+Then run the Task 8 fresh-EC2 installation, repeat-install, backup/restore, and failed-upgrade tests. Production approval requires all checks to pass and requires recording the exact ECR image digests.

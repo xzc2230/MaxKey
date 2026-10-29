@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -12,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from deployment.aws_compose_renderer import write_rendered_file
+from deployment.aws_compose_renderer import TemplateOutput, render_outputs, write_outputs_atomically
 
 
 def parse_value(raw: str) -> tuple[str, str]:
@@ -25,8 +24,30 @@ def parse_value(raw: str) -> tuple[str, str]:
 
 
 def build_values(overrides: list[tuple[str, str]]) -> dict[str, str]:
-    values = dict(os.environ)
+    values = {}
     values.update(overrides)
+    return values
+
+
+def read_values_file(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        raise ValueError(f"values file not found: {path}")
+    if sys.platform != "win32":
+        mode = path.stat().st_mode & 0o777
+        if mode != 0o600:
+            raise ValueError("values file must be mode 0600")
+
+    values: dict[str, str] = {}
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise ValueError(f"invalid values file line: {line_number}")
+        key, value = line.split("=", 1)
+        if not key:
+            raise ValueError(f"invalid values file line: {line_number}")
+        values[key] = value
     return values
 
 
@@ -51,7 +72,13 @@ def parser() -> argparse.ArgumentParser:
     argument_parser.add_argument("--env-template", type=Path, default=paths["env_template"])
     argument_parser.add_argument("--nginx-template", type=Path, default=paths["nginx_template"])
     argument_parser.add_argument("--output-root", type=Path, default=paths["output_root"])
-    argument_parser.add_argument("--compose-output-dir", type=Path, default=paths["compose_output_dir"])
+    argument_parser.add_argument(
+        "--compose-output-dir",
+        type=Path,
+        default=None,
+        help="Compatibility override for .env and rendered Nginx output location.",
+    )
+    argument_parser.add_argument("--values-file", type=Path)
     argument_parser.add_argument(
         "--value",
         action="append",
@@ -65,16 +92,28 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
-    values = build_values(args.value)
+    try:
+        values = read_values_file(args.values_file) if args.values_file else {}
+        values.update(build_values(args.value))
+        compose_output_dir = args.compose_output_dir or args.output_root
 
-    write_rendered_file(args.source_sql, args.output_root / "mysql" / "init" / "00-maxkey.sql", values)
-    write_rendered_file(args.hardening_template, args.output_root / "mysql" / "init" / "01-hardening.sql", values)
-    write_rendered_file(args.env_template, args.compose_output_dir / ".env", values)
-    write_rendered_file(
-        args.nginx_template,
-        args.compose_output_dir / "nginx" / "conf.d" / "maxkey.conf",
-        values,
-    )
+        outputs = render_outputs(
+            [
+                TemplateOutput(args.source_sql, args.output_root / "mysql" / "init" / "00-maxkey.sql", is_sql=True),
+                TemplateOutput(
+                    args.hardening_template,
+                    args.output_root / "mysql" / "init" / "01-hardening.sql",
+                    is_sql=True,
+                ),
+                TemplateOutput(args.env_template, compose_output_dir / ".env"),
+                TemplateOutput(args.nginx_template, compose_output_dir / "nginx" / "conf.d" / "maxkey.conf"),
+            ],
+            values,
+        )
+        write_outputs_atomically(outputs)
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
     return 0
 
 
