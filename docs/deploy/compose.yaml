@@ -1,0 +1,273 @@
+# 单机部署：中间件、MaxKey、Chatwoot、客服入口和 Nginx 都在这一台服务器上。
+name: maxkey-saas
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  nginx:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    depends_on:
+      - maxkey-auth
+      - maxkey-mgt
+      - maxkey-auth-web
+      - maxkey-mgt-web
+      - chatwoot-rails
+      - agent-bridge
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/saas.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/proxy-params.conf:/etc/nginx/proxy-params.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    networks:
+      - edge
+    logging: *default-logging
+
+  maxkey-mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: maxkey
+      MYSQL_USER: maxkey_app
+      MYSQL_PASSWORD: ${MAXKEY_DATABASE_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MAXKEY_DATABASE_ROOT_PASSWORD}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - maxkey_mysql:/var/lib/mysql
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MAXKEY_DATABASE_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      - iam_data
+    logging: *default-logging
+
+  maxkey-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${MAXKEY_REDIS_PASSWORD}"]
+    volumes:
+      - maxkey_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${MAXKEY_REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      - iam_data
+    logging: *default-logging
+
+  maxkey-auth:
+    image: ${MAXKEY_AUTH_IMAGE}
+    restart: unless-stopped
+    environment:
+      DATABASE_HOST: maxkey-mysql
+      DATABASE_PORT: "3306"
+      DATABASE_NAME: maxkey
+      DATABASE_USER: maxkey_app
+      DATABASE_PWD: ${MAXKEY_DATABASE_PASSWORD}
+      REDIS_HOST: maxkey-redis
+      REDIS_PORT: "6379"
+      REDIS_PWD: ${MAXKEY_REDIS_PASSWORD}
+      SERVER_PERSISTENCE: "2"
+      SERVER_HOST: ${SSO_HOST}
+      MAXKEY_SERVER_FRONTEND_URI: ${SSO_PUBLIC_BASE}/maxkey
+      LOGIN_MFA_ENABLED: ${MAXKEY_MFA_ENABLED:-true}
+      JWT_SECRET: ${MAXKEY_JWT_SECRET}
+      JWT_REFRESH_SECRET: ${MAXKEY_JWT_REFRESH_SECRET}
+      TZ: Asia/Shanghai
+      JAVA_OPTS: "-Xms512m -Xmx2048m -XX:+ExitOnOutOfMemoryError"
+    depends_on:
+      maxkey-mysql:
+        condition: service_healthy
+      maxkey-redis:
+        condition: service_healthy
+    networks:
+      - edge
+      - iam_data
+    logging: *default-logging
+
+  maxkey-mgt:
+    image: ${MAXKEY_MGT_IMAGE}
+    restart: unless-stopped
+    environment:
+      DATABASE_HOST: maxkey-mysql
+      DATABASE_PORT: "3306"
+      DATABASE_NAME: maxkey
+      DATABASE_USER: maxkey_app
+      DATABASE_PWD: ${MAXKEY_DATABASE_PASSWORD}
+      REDIS_HOST: maxkey-redis
+      REDIS_PORT: "6379"
+      REDIS_PWD: ${MAXKEY_REDIS_PASSWORD}
+      SERVER_PERSISTENCE: "2"
+      SERVER_HOST: ${ADMIN_HOST}
+      LOGIN_MFA_ENABLED: ${MAXKEY_MFA_ENABLED:-true}
+      JWT_SECRET: ${MAXKEY_JWT_SECRET}
+      JWT_REFRESH_SECRET: ${MAXKEY_JWT_REFRESH_SECRET}
+      TZ: Asia/Shanghai
+      JAVA_OPTS: "-Xms256m -Xmx1536m -XX:+ExitOnOutOfMemoryError"
+    depends_on:
+      maxkey-mysql:
+        condition: service_healthy
+      maxkey-redis:
+        condition: service_healthy
+    networks:
+      - edge
+      - iam_data
+    logging: *default-logging
+
+  maxkey-auth-web:
+    image: ${MAXKEY_AUTH_WEB_IMAGE}
+    restart: unless-stopped
+    networks:
+      - edge
+    logging: *default-logging
+
+  maxkey-mgt-web:
+    image: ${MAXKEY_MGT_WEB_IMAGE}
+    restart: unless-stopped
+    networks:
+      - edge
+    logging: *default-logging
+
+  chatwoot-postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: chatwoot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${CHATWOOT_POSTGRES_PASSWORD}
+    volumes:
+      - chatwoot_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d chatwoot"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      - chat_data
+    logging: *default-logging
+
+  chatwoot-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${CHATWOOT_REDIS_PASSWORD}"]
+    volumes:
+      - chatwoot_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${CHATWOOT_REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      - chat_data
+    logging: *default-logging
+
+  chatwoot-rails:
+    image: ${CHATWOOT_IMAGE}
+    restart: unless-stopped
+    entrypoint: docker/entrypoints/rails.sh
+    command: ["bundle", "exec", "rails", "s", "-p", "3000", "-b", "0.0.0.0"]
+    environment: &chatwoot-env
+      NODE_ENV: production
+      RAILS_ENV: production
+      INSTALLATION_ENV: docker
+      FRONTEND_URL: ${CHAT_PUBLIC_BASE}
+      FORCE_SSL: ${CHATWOOT_FORCE_SSL:-false}
+      ENABLE_ACCOUNT_SIGNUP: "false"
+      DEFAULT_LOCALE: zh_CN
+      ACTIVE_STORAGE_SERVICE: local
+      POSTGRES_HOST: chatwoot-postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DATABASE: chatwoot
+      POSTGRES_USERNAME: postgres
+      POSTGRES_PASSWORD: ${CHATWOOT_POSTGRES_PASSWORD}
+      REDIS_URL: redis://:${CHATWOOT_REDIS_PASSWORD}@chatwoot-redis:6379
+      SECRET_KEY_BASE: ${CHATWOOT_SECRET_KEY_BASE}
+      ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY: ${CHATWOOT_ACTIVE_RECORD_PRIMARY_KEY}
+      ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY: ${CHATWOOT_ACTIVE_RECORD_DETERMINISTIC_KEY}
+      ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT: ${CHATWOOT_ACTIVE_RECORD_SALT}
+      TZ: Asia/Shanghai
+    volumes:
+      - chatwoot_storage:/app/storage
+    depends_on:
+      chatwoot-postgres:
+        condition: service_healthy
+      chatwoot-redis:
+        condition: service_healthy
+    networks:
+      - edge
+      - chat_data
+    logging: *default-logging
+
+  chatwoot-sidekiq:
+    image: ${CHATWOOT_IMAGE}
+    restart: unless-stopped
+    command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+    environment: *chatwoot-env
+    volumes:
+      - chatwoot_storage:/app/storage
+    depends_on:
+      chatwoot-postgres:
+        condition: service_healthy
+      chatwoot-redis:
+        condition: service_healthy
+    networks:
+      - chat_data
+    logging: *default-logging
+
+  agent-bridge:
+    build:
+      context: ../../local-chat
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      BIND_HOST: 0.0.0.0
+      PORT: "3011"
+      PUBLIC_BASE: ${AGENT_PUBLIC_BASE}
+      MAXKEY_PUBLIC_ISSUER: ${MAXKEY_PUBLIC_ISSUER}
+      MAXKEY_ISSUER: http://maxkey-auth:9527/sign
+      MAXKEY_INST_ID: ${MAXKEY_INST_ID:-1}
+      MAXKEY_CLIENT_ID: ${MAXKEY_CLIENT_ID}
+      MAXKEY_CLIENT_SECRET: ${MAXKEY_CLIENT_SECRET}
+      CHATWOOT_BASE: ${CHAT_PUBLIC_BASE}
+      CHATWOOT_API_BASE: http://chatwoot-rails:3000
+      CHATWOOT_ACCOUNT_ID: ${CHATWOOT_ACCOUNT_ID}
+      CHATWOOT_PLATFORM_TOKEN: ${CHATWOOT_PLATFORM_TOKEN}
+      CHATWOOT_AGENT_PASSWORD: ${CHATWOOT_AGENT_PASSWORD}
+      CHATWOOT_WEBSITE_TOKEN: ${CHATWOOT_WEBSITE_TOKEN}
+      DATA_DIR: /data
+    volumes:
+      - agent_data:/data
+    depends_on:
+      - maxkey-auth
+      - chatwoot-rails
+    networks:
+      - edge
+    logging: *default-logging
+
+networks:
+  edge:
+  iam_data:
+    internal: true
+  chat_data:
+    internal: true
+
+volumes:
+  maxkey_mysql:
+  maxkey_redis:
+  chatwoot_postgres:
+  chatwoot_redis:
+  chatwoot_storage:
+  agent_data:
