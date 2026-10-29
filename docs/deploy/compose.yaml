@@ -127,6 +127,7 @@ services:
       - iam_data
     logging: *default-logging
 
+  # 由 maxkey-web-frontend/maxkey-web-ng/Dockerfile 构建，容器内监听 8527。
   maxkey-auth-web:
     image: ${MAXKEY_AUTH_WEB_IMAGE}
     restart: unless-stopped
@@ -134,6 +135,7 @@ services:
       - edge
     logging: *default-logging
 
+  # 由 maxkey-web-frontend/maxkey-web-mgt-ng/Dockerfile 构建，容器内监听 8526。
   maxkey-mgt-web:
     image: ${MAXKEY_MGT_WEB_IMAGE}
     restart: unless-stopped
@@ -229,6 +231,7 @@ services:
 
   agent-bridge:
     build:
+      # 相对本文件，指向仓库根目录的 local-chat/。
       context: ../../local-chat
       dockerfile: Dockerfile
     restart: unless-stopped

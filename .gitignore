@@ -58,3 +58,9 @@ maxkey-web-frontend/maxkey-web-ng/dist
 **/out/*
 /.sonarlint
 **/**/package-lock.json
+
+docs/deploy/.env
+docs/deploy/nginx/certs/*
+!docs/deploy/nginx/certs/.gitkeep
+docs/deploy/mysql/init/*
+!docs/deploy/mysql/init/.gitkeep
