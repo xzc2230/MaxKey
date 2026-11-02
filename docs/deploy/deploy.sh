@@ -274,6 +274,7 @@ wait_http() {
   local name="$1"
   shift
   local i code
+  echo "等待 $name 返回 HTTP 状态，最多 10 分钟。"
   for i in $(seq 1 120); do
     if ! code="$("$@" 2>/dev/null)"; then
       code=""
@@ -283,6 +284,9 @@ wait_http() {
     if [[ "$code" =~ ^[234][0-9][0-9]$ ]]; then
       echo "$name 就绪: HTTP $code"
       return 0
+    fi
+    if (( i % 6 == 0 )); then
+      echo "仍在等待 $name（已等待 $((i * 5)) 秒）"
     fi
     sleep 5
   done
