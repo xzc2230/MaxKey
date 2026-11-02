@@ -149,7 +149,7 @@ async function handle(requestUrl) {
 <script>
   window.chatwootSettings = { position: "right", locale: "zh_CN", type: "standard" };
   ${identityScript}
-  (function(d,t){var g=d.createElement(t),s=d.getElementsByTagName(t)[0];g.src="${base}/packs/js/sdk.js";g.async=true;s.parentNode.insertBefore(g,s);g.onload=function(){window.chatwootSDK.run({websiteToken:"${token}",baseUrl:"${base}"})}})(document,"script");
+  (function(d,t){var base=${JSON.stringify(base)};if(location.protocol==="https:"&&base.indexOf("http://")===0){base="https://"+base.slice(7);}var g=d.createElement(t),s=d.getElementsByTagName(t)[0];g.src=base+"/packs/js/sdk.js";g.async=true;s.parentNode.insertBefore(g,s);g.onload=function(){window.chatwootSDK.run({websiteToken:${JSON.stringify(token)},baseUrl:base});};})(document,"script");
 </script></body></html>`;
     return { status: 200, headers: { "content-type": "text/html; charset=utf-8" }, body: html };
   }

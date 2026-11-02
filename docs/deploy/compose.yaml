@@ -118,6 +118,8 @@ services:
       LOGIN_MFA_ENABLED: ${MAXKEY_MFA_ENABLED:-true}
       JWT_SECRET: ${MAXKEY_JWT_SECRET}
       JWT_REFRESH_SECRET: ${MAXKEY_JWT_REFRESH_SECRET}
+      LOGIN_CAS_SERVER: ${SSO_PUBLIC_BASE}/sign/authz/cas
+      LOGIN_CAS_SERVICE: http://${ADMIN_HOST}/maxkey-mgt/passport/trust/auth
       TZ: Asia/Shanghai
       JAVA_OPTS: "-Xms256m -Xmx1536m -XX:+ExitOnOutOfMemoryError"
     depends_on:
