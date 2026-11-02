@@ -43,8 +43,33 @@ if [[ "$(timedatectl show -p Timezone --value 2>/dev/null || true)" != "Asia/Sha
 fi
 
 export DEBIAN_FRONTEND=noninteractive
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl xz-utils python3 openjdk-21-jdk docker.io docker-compose-v2
+
+run_apt() {
+  local waited=0
+  local log
+  while true; do
+    log="$(mktemp)"
+    if sudo apt-get "$@" 2>&1 | tee "$log"; then
+      rm -f "$log"
+      return 0
+    fi
+    if ! grep -q "Could not get lock" "$log"; then
+      rm -f "$log"
+      return 1
+    fi
+    rm -f "$log"
+    if [[ "$waited" -ge 900 ]]; then
+      echo "等待 dpkg 锁超过 15 分钟。等 unattended-upgrades 结束后再执行本脚本。" >&2
+      return 1
+    fi
+    echo "系统自动更新正在占用 dpkg，15 秒后重试。"
+    sleep 15
+    waited=$((waited + 15))
+  done
+}
+
+run_apt update
+run_apt install -y ca-certificates curl xz-utils python3 openjdk-21-jdk docker.io docker-compose-v2
 sudo systemctl enable --now docker
 
 if ! id -nG "$USER" | grep -qw docker; then
