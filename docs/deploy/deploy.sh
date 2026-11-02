@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
-# 在仓库根目录构建并启动中间件、MaxKey 前后端、Chatwoot 和客服入口。
+# 在服务器仓库根目录构建并启动中间件、MaxKey 前后端、Chatwoot 和客服入口。
+# 仓库固定在 /opt/maxkey/maxkey-deploy/MaxKey，不使用 /opt/maxkey。
 # 用法：bash docs/deploy/deploy.sh [--rebuild]
 set -euo pipefail
 
+EXPECTED_ROOT="/opt/maxkey/maxkey-deploy/MaxKey"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [[ "$ROOT" != "$EXPECTED_ROOT" ]]; then
+  echo "部署目录必须是 $EXPECTED_ROOT" >&2
+  echo "当前是 $ROOT。不要把仓库放到 /opt/maxkey。" >&2
+  exit 1
+fi
+
 ENV_FILE="$ROOT/docs/deploy/.env"
 EXAMPLE="$ROOT/docs/deploy/.env.example"
 COMPOSE_FILE="$ROOT/docs/deploy/compose.yaml"
