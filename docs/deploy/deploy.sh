@@ -68,8 +68,38 @@ run_apt() {
   done
 }
 
+docker_ready() {
+  command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && sudo apt-get check >/dev/null 2>&1
+}
+
+# Ubuntu 的 docker-compose-v2 和 Docker CE 的 docker-compose-plugin 都安装
+# /usr/libexec/docker/cli-plugins/docker-compose。已经能用 Compose 时不要安装 docker.io，
+# 否则 apt 会卸掉 docker-ce，再在这个文件上安装失败。
+ensure_docker() {
+  if docker_ready; then
+    echo "Docker 与 Compose 已可用，保持现有安装。"
+    return
+  fi
+
+  sudo dpkg --configure -a || true
+  if docker_ready; then
+    echo "Docker 与 Compose 已可用，保持现有安装。"
+    return
+  fi
+
+  if dpkg-query -W -f '${Status}' docker-compose-plugin 2>/dev/null | grep -q ' installed'; then
+    echo "卸下 docker-compose-plugin。它和 docker-compose-v2 不能同时安装。"
+    sudo apt-get remove -y docker-compose-plugin
+  fi
+  if ! run_apt install -y docker.io docker-compose-v2; then
+    sudo apt-get -f install -y
+    run_apt install -y docker.io docker-compose-v2
+  fi
+}
+
 run_apt update
-run_apt install -y ca-certificates curl xz-utils python3 openjdk-21-jdk docker.io docker-compose-v2
+ensure_docker
+run_apt install -y ca-certificates curl xz-utils python3 openjdk-21-jdk
 sudo systemctl enable --now docker
 
 if ! id -nG "$USER" | grep -qw docker; then
@@ -277,6 +307,8 @@ build_frontend() {
   fi
   (
     cd "$dir"
+    # pnpm 12.6 会把未表态的依赖写成 "name: set this to true or false"，下一轮无法解析。
+    sed -i '/: set this to true or false$/d' pnpm-workspace.yaml
     HUSKY=0 CI=true NODE_OPTIONS="--max-old-space-size=4096" pnpm install --frozen-lockfile
     HUSKY=0 CI=true NODE_OPTIONS="--max-old-space-size=4096" pnpm run build:prod
   )
