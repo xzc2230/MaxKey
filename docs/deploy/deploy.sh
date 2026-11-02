@@ -156,6 +156,7 @@ import os
 import pathlib
 import re
 import secrets
+import string
 import sys
 
 env_path = pathlib.Path(os.environ["ENV_FILE"])
@@ -179,12 +180,39 @@ def setk(key, value):
     else:
         text += line + "\n"
 
-def ensure(key, factory):
-    if get(key):
+def ensure(key, factory, accept=None):
+    current = get(key)
+    if current and (accept is None or accept(current)):
         print(f"保留 {key}")
         return
     setk(key, factory())
-    print(f"已生成 {key}")
+    if current:
+        print(f"已更换 {key}")
+    else:
+        print(f"已生成 {key}")
+
+def chatwoot_agent_password():
+    # 不含 $、引号、反斜杠和空格，避免被 .env 和 bash source 拆开。
+    specials = "!@%^*_+-="
+    chars = [
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.digits),
+        secrets.choice(specials),
+    ]
+    pool = string.ascii_letters + string.digits + specials
+    chars.extend(secrets.choice(pool) for _ in range(28))
+    secrets.SystemRandom().shuffle(chars)
+    return "".join(chars)
+
+def chatwoot_agent_password_ok(value):
+    return bool(
+        len(value) >= 8
+        and re.search(r"[A-Z]", value)
+        and re.search(r"[a-z]", value)
+        and re.search(r"\d", value)
+        and re.search(r"[!@#$%^&*()_+\-=]", value)
+    )
 
 ensure("MAXKEY_DATABASE_ROOT_PASSWORD", lambda: secrets.token_hex(24))
 ensure("MAXKEY_DATABASE_PASSWORD", lambda: secrets.token_hex(24))
@@ -198,7 +226,7 @@ ensure("CHATWOOT_SECRET_KEY_BASE", lambda: secrets.token_hex(64))
 ensure("CHATWOOT_ACTIVE_RECORD_PRIMARY_KEY", lambda: secrets.token_hex(32))
 ensure("CHATWOOT_ACTIVE_RECORD_DETERMINISTIC_KEY", lambda: secrets.token_hex(32))
 ensure("CHATWOOT_ACTIVE_RECORD_SALT", lambda: secrets.token_hex(32))
-ensure("CHATWOOT_AGENT_PASSWORD", lambda: secrets.token_hex(18))
+ensure("CHATWOOT_AGENT_PASSWORD", chatwoot_agent_password, chatwoot_agent_password_ok)
 if not get("MAXKEY_CLIENT_ID"):
     setk("MAXKEY_CLIENT_ID", "agent-bridge")
     print("已写入 MAXKEY_CLIENT_ID=agent-bridge")
@@ -446,6 +474,8 @@ build_frontend "$MAXKEY_MGT_WEB_IMAGE" "$ROOT/maxkey-web-frontend/maxkey-web-mgt
 echo "5/8 启动 MySQL、Redis、Postgres 和 Chatwoot"
 compose up -d --wait --wait-timeout 300 \
   maxkey-mysql maxkey-redis chatwoot-postgres chatwoot-redis
+echo "初始化 Chatwoot 数据库。镜像不会在启动时建表。"
+compose run --rm --no-deps -T chatwoot-rails bundle exec rails db:chatwoot_prepare
 compose up -d chatwoot-rails chatwoot-sidekiq
 wait_http "Chatwoot" \
   "${DOCKER[@]}" compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T chatwoot-rails \
