@@ -232,8 +232,8 @@ services:
       SIDEKIQ_CONCURRENCY: "8"
       MALLOC_ARENA_MAX: "2"
       RUBY_YJIT_ENABLE: "1"
-      # 小组件默认同一 IP 每分钟 60 条消息。几百人同时发会被这道限额先丢掉。
-      RATE_LIMIT_WIDGET_MESSAGES: "6000"
+      # 同一 IP 每分钟 400 条消息。
+      RATE_LIMIT_WIDGET_MESSAGES: "400"
       RATE_LIMIT_WIDGET_CONVERSATIONS: "2000"
       RACK_ATTACK_LIMIT: "60000"
       FRONTEND_URL: ${CHAT_PUBLIC_BASE}
